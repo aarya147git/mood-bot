@@ -318,8 +318,21 @@ class AudioPlayerService:
         Schedules the async download + play on the event loop.
         Returns immediately — use play_track_async directly if you need to await it.
         """
+        if not track.preview_url:
+            return False, "This song does not have an audio preview stream available."
+
+        if not voice_client.is_connected():
+            return False, "Bot is not connected to a voice channel."
+
         if loop is None:
-            loop = asyncio.get_event_loop()
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                try:
+                    loop = asyncio.get_event_loop()
+                except RuntimeError:
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
 
         asyncio.run_coroutine_threadsafe(
             self.play_track_async(

@@ -8,9 +8,8 @@ and establishes global error boundaries.
 Academic Design Highlights:
 - Object-Oriented Client: Subclasses `commands.Bot` rather than using a global instance,
   encapsulating lifecycle hooks and extension loading cleanly.
-- Least-Privilege Gateway Intents: Only requests standard intents (`guilds`),
-  avoiding unnecessary privileged intents (e.g. Message Content or Server Members)
-  since slash commands and button interactions operate via Discord interaction webhooks.
+- Gateway Intents with Fallback Handling: Requests standard intents and Message Content Intent,
+  with automatic fallback handling if Privileged Intents are not yet toggled in the Developer Portal.
 - Dynamic Extension Loader: Iterates over the `cogs/` package, supporting plug-and-play modularity.
 - Two-Tier Command Synchronization:
   Supports immediate guild-level syncing for rapid local development,
@@ -55,12 +54,12 @@ INITIAL_EXTENSIONS: list[str] = [
 class AuraTunesBot(commands.Bot):
     """Custom Discord Bot client managing lifecycle hooks and slash commands."""
 
-    def __init__(self) -> None:
-        # Gateway intents: slash commands, guild presence, and voice state tracking
+    def __init__(self, enable_message_content: bool = True) -> None:
+        # Gateway intents: slash commands, guild presence, voice states, and optional message content
         intents = discord.Intents.default()
         intents.guilds = True
         intents.voice_states = True  # Required for voice channel music streaming
-        intents.message_content = True  # Required for capturing in-chat Wordle guesses
+        intents.message_content = enable_message_content  # For capturing in-chat Wordle guesses
 
         super().__init__(
             command_prefix=commands.when_mentioned,  # Primarily uses slash commands
@@ -112,47 +111,60 @@ class AuraTunesBot(commands.Bot):
         await self.change_presence(status=discord.Status.online, activity=activity)
 
 
-# ---------------------------------------------------------------------------
-# Global Application Command Error Handler
-# ---------------------------------------------------------------------------
-bot = AuraTunesBot()
+def create_bot(enable_message_content: bool = True) -> AuraTunesBot:
+    """Helper factory function creating an instance of AuraTunesBot."""
+    bot_instance = AuraTunesBot(enable_message_content=enable_message_content)
 
+    @bot_instance.tree.error
+    async def on_app_command_error(
+        interaction: discord.Interaction,
+        error: app_commands.AppCommandError,
+    ) -> None:
+        """Global error boundary for unhandled exceptions in slash commands."""
+        logger.error("Unhandled slash command error on %s: %s", interaction.command, error, exc_info=error)
 
-@bot.tree.error
-async def on_app_command_error(
-    interaction: discord.Interaction,
-    error: app_commands.AppCommandError,
-) -> None:
-    """
-    Global error boundary for unhandled exceptions in slash commands.
-    Ensures the user receives an informative response rather than an unresponsive interaction.
-    """
-    logger.error("Unhandled slash command error on %s: %s", interaction.command, error, exc_info=error)
+        error_embed = create_error_embed(
+            title="Command Error",
+            message="An unexpected error occurred while executing this command.",
+            suggestion="If the problem persists, please notify the bot administrator.",
+        )
 
-    error_embed = create_error_embed(
-        title="Command Error",
-        message="An unexpected error occurred while executing this command.",
-        suggestion="If the problem persists, please notify the bot administrator.",
-    )
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(embed=error_embed, ephemeral=True)
+            else:
+                await interaction.response.send_message(embed=error_embed, ephemeral=True)
+        except Exception as send_err:
+            logger.error("Failed to send error notification to Discord: %s", send_err)
 
-    try:
-        if interaction.response.is_done():
-            await interaction.followup.send(embed=error_embed, ephemeral=True)
-        else:
-            await interaction.response.send_message(embed=error_embed, ephemeral=True)
-    except Exception as send_err:
-        logger.error("Failed to send error notification to Discord: %s", send_err)
+    return bot_instance
 
 
 # ---------------------------------------------------------------------------
 # Main Execution Guard
 # ---------------------------------------------------------------------------
 def main() -> None:
-    """Validates configuration and launches the bot process."""
+    """Validates configuration and launches the bot process with automatic Privileged Intent fallback."""
     config.validate_config()
     logger.info("Starting %s...", config.BOT_NAME)
+
     try:
+        bot = create_bot(enable_message_content=True)
         bot.run(config.DISCORD_TOKEN)
+    except discord.PrivilegedIntentsRequired:
+        logger.warning(
+            "\n" + "=" * 75 + "\n"
+            "[PRIVILEGED INTENT NOTICE] Message Content Intent is not enabled in Developer Portal!\n"
+            "To enable direct in-chat Wordle guesses:\n"
+            "  1. Go to https://discord.com/developers/applications\n"
+            "  2. Click your Bot Application -> Select 'Bot' from the left sidebar.\n"
+            "  3. Scroll down to 'Privileged Gateway Intents'.\n"
+            "  4. Toggle 'MESSAGE CONTENT INTENT' to ON and click 'Save Changes'.\n\n"
+            "Starting bot in compatibility mode (Slash commands and Button Modal guesses will work!)...\n"
+            + "=" * 75 + "\n"
+        )
+        fallback_bot = create_bot(enable_message_content=False)
+        fallback_bot.run(config.DISCORD_TOKEN)
     except KeyboardInterrupt:
         logger.info("Bot interrupted by user. Shutting down cleanly...")
     except discord.LoginFailure:

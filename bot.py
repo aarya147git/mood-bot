@@ -60,7 +60,7 @@ class AuraTunesBot(commands.Bot):
         intents = discord.Intents.default()
         intents.guilds = True
         intents.voice_states = True  # Required for voice channel music streaming
-        intents.message_content = False  # Not required for modern slash commands
+        intents.message_content = True  # Required for capturing in-chat Wordle guesses
 
         super().__init__(
             command_prefix=commands.when_mentioned,  # Primarily uses slash commands
